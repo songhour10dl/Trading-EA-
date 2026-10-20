@@ -17,7 +17,14 @@ export const useSocket = () => {
   useEffect(() => {
     if (!user) return;
 
-    const socket = initSocket(user.token);
+    // Get token from localStorage since user object may not have it
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+      console.error('No auth token found in localStorage');
+      return;
+    }
+
+    const socket = initSocket(token);
 
     const unsubscribeUpdates = subscribeToUpdates((data) => {
       botStore.updateBotStatus(data);
