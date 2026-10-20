@@ -1,0 +1,256 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String             @id @default(uuid())
+  username         String             @unique
+  email            String             @unique
+  passwordHash     String
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  backtestResults  BacktestResult[]
+  eaInstances      EAInstance[]
+  notifications    Notification[]
+
+  @@map("users")
+}
+
+model EAInstance {
+  id                String              @id @default(uuid())
+  userId            String
+  apiKey            String              @unique
+  displayName       String              @default("Trading Bot")
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activityLogs      ActivityLog[]
+  botState          BotState?
+  commands          Command[]
+  positions         Position[]
+  settings          Settings?
+  strategySettings  StrategySettings[]
+  trades            Trade[]
+
+  @@map("ea_instances")
+}
+
+model BotState {
+  id                      String       @id @default(uuid())
+  eaInstanceId            String       @unique
+  status                  String       @default("DISCONNECTED")
+  tradingStatus           String       @default("WAITING_FOR_SIGNAL")
+  activeStrategy          String?
+  lastHeartbeat           DateTime?
+  accountBalance          Float        @default(0)
+  accountEquity           Float        @default(0)
+  marginLevel             Float        @default(0)
+  freeMargin              Float        @default(0)
+  openPositionsCount      Int          @default(0)
+  floatingPnl             Float        @default(0)
+  dailyRealizedPnl        Float        @default(0)
+  currentSpread           Float        @default(0)
+  accountNumber           String?
+  server                  String?
+  dailyDrawdownPercent    Float        @default(0)
+  weeklyDrawdownPercent   Float        @default(0)
+  monthlyDrawdownPercent  Float        @default(0)
+  dailyProfit             Float        @default(0)
+  weeklyProfit            Float        @default(0)
+  monthlyProfit           Float        @default(0)
+  totalProfit             Float        @default(0)
+  recoveryLevel           Int          @default(0)
+  newEntriesAllowed       Boolean      @default(false)
+  riskBlockReason         String?
+  marketState             String       @default("UNKNOWN")
+  marketAnalysisTime      DateTime?
+  updatedAt               DateTime     @updatedAt
+  eaInstance              EAInstance   @relation(fields: [eaInstanceId], references: [id], onDelete: Cascade)
+
+  @@map("bot_state")
+}
+
+model Settings {
+  id                     String       @id @default(uuid())
+  eaInstanceId           String       @unique
+  symbol                 String       @default("XAUUSD")
+  entryTf                String       @default("M1")
+  confirmTf              String       @default("M5")
+  tradingEnabled         Boolean      @default(false)
+  riskPercentage         Float        @default(1.0)
+  fixedLotSize           Float?
+  maxLotSize             Float        @default(1.0)
+  maxConcurrentPositions Int          @default(3)
+  maxDailyLoss           Float        @default(-100)
+  maxDailyTrades         Int          @default(50)
+  maxConsecutiveLosses   Int          @default(5)
+  maxSpread              Float        @default(5.0)
+  slType                 String       @default("FIXED")
+  tpType                 String       @default("FIXED")
+  breakEvenEnabled       Boolean      @default(false)
+  trailingStopEnabled    Boolean      @default(false)
+  newsBlackoutEnabled    Boolean      @default(false)
+  sessionRestrictions    String       @default("")
+  strategySettings       Json         @default("{}")
+  martingaleSettings     Json         @default("{}")
+  notificationPrefs      Json         @default("{}")
+  version                Int          @default(1)
+  updatedAt              DateTime     @updatedAt
+  eaInstance             EAInstance   @relation(fields: [eaInstanceId], references: [id], onDelete: Cascade)
+
+  @@map("settings")
+}
+
+model StrategySettings {
+  id           String       @id @default(uuid())
+  eaInstanceId String
+  strategyName String
+  enabled      Boolean      @default(false)
+  config       Json         @default("{}")
+  version      Int          @default(1)
+  updatedAt    DateTime     @updatedAt
+  eaInstance   EAInstance   @relation(fields: [eaInstanceId], references: [id], onDelete: Cascade)
+
+  @@unique([eaInstanceId, strategyName])
+  @@map("strategy_settings")
+}
+
+model Position {
+  id           String       @id @default(uuid())
+  eaInstanceId String
+  ticket       String       @unique
+  symbol       String
+  direction    String
+  strategy     String?
+  entryPrice   Float
+  entryTime    DateTime
+  currentPrice Float
+  lotSize      Float
+  stopLoss     Float?
+  takeProfit   Float?
+  floatingPnl  Float        @default(0)
+  riskEstimate Float?
+  magicNumber  Int?
+  data         Json         @default("{}")
+  updatedAt    DateTime     @updatedAt
+  eaInstance   EAInstance   @relation(fields: [eaInstanceId], references: [id], onDelete: Cascade)
+  trades       Trade[]
+
+  @@index([eaInstanceId])
+  @@index([ticket])
+  @@map("positions")
+}
+
+model Trade {
+  id              String       @id @default(uuid())
+  eaInstanceId    String
+  ticket          String
+  positionId      String?
+  symbol          String
+  direction       String
+  strategy        String?
+  entryPrice      Float
+  entryTime       DateTime
+  exitPrice       Float?
+  exitTime        DateTime?
+  lotSize         Float
+  profitLoss      Float?
+  commission      Float?
+  swap            Float?
+  entryReason     String?
+  exitReason      String?
+  durationMinutes Int?
+  riskAtEntry     Float?
+  data            Json         @default("{}")
+  createdAt       DateTime     @default(now())
+  eaInstance      EAInstance   @relation(fields: [eaInstanceId], references: [id], onDelete: Cascade)
+  position        Position?    @relation(fields: [positionId], references: [id])
+
+  @@unique([eaInstanceId, ticket])
+  @@index([createdAt])
+  @@index([eaInstanceId])
+  @@index([symbol])
+  @@map("trades")
+}
+
+model Command {
+  id             String       @id @default(uuid())
+  eaInstanceId   String
+  type           String
+  status         String       @default("PENDING")
+  params         Json         @default("{}")
+  result         Json?
+  createdAt      DateTime     @default(now())
+  acknowledgedAt DateTime?
+  completedAt    DateTime?
+  expiresAt      DateTime
+  updatedAt      DateTime     @updatedAt
+  eaInstance     EAInstance   @relation(fields: [eaInstanceId], references: [id], onDelete: Cascade)
+
+  @@index([eaInstanceId])
+  @@index([status])
+  @@map("commands")
+}
+
+model ActivityLog {
+  id           String       @id @default(uuid())
+  eaInstanceId String
+  eventType    String
+  severity     String       @default("INFO")
+  symbol       String?
+  strategy     String?
+  message      String
+  data         Json         @default("{}")
+  createdAt    DateTime     @default(now())
+  eaInstance   EAInstance   @relation(fields: [eaInstanceId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([eaInstanceId])
+  @@index([eventType])
+  @@map("activity_logs")
+}
+
+model BacktestResult {
+  id           String   @id @default(uuid())
+  userId       String
+  strategy     String
+  config       Json     @default("{}")
+  symbol       String
+  dateFrom     DateTime
+  dateTo       DateTime
+  totalTrades  Int
+  wins         Int
+  losses       Int
+  profitFactor Float?
+  maxDrawdown  Float?
+  avgWinner    Float?
+  avgLoser     Float?
+  data         Json     @default("{}")
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([strategy])
+  @@index([userId])
+  @@map("backtest_results")
+}
+
+model Notification {
+  id          String    @id @default(uuid())
+  userId      String
+  type        String
+  channel     String
+  status      String    @default("SENT")
+  data        Json      @default("{}")
+  createdAt   DateTime  @default(now())
+  dismissedAt DateTime?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([type])
+  @@index([userId])
+  @@map("notifications")
+}
