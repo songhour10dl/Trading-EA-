@@ -38,6 +38,21 @@ input double             MaxSpreadPoints    = 80.0;   // XAUUSD broker points
 input int                MaxSlippagePoints  = 30;
 input int                HeartbeatInterval  = 10;     // seconds
 
+//--- Controlled Martingale Averaging Inputs -------------------------
+input bool               EnableMartingale   = true;
+input bool               EnableBuy          = true;
+input bool               EnableSell         = false;
+input double             InitialLot         = 0.01;
+input double             LotMultiplier      = 2.0;
+input int                GridStepPoints     = 1200;
+input int                MaxOrders          = 5;
+input double             MaxLotPerOrder     = 0.08;
+input double             MaxBasketLots      = 0.15;
+input double             BasketTakeProfitMoney = 1.00;
+input double             BasketStopLossMoney = 5.00;
+input double             MaxDrawdownPercent = 10.0;
+input int                CooldownAfterBasketCloseMinutes = 5;
+
 input ENUM_TIMEFRAMES    EntryTimeframe     = PERIOD_M1;
 input int                RSI_Period         = 14;
 input int                BB_Period          = 20;
