@@ -1400,74 +1400,110 @@ void ExecuteMeanReversion()
    double tpDistance = slDistance * RewardRiskRatio;
 
    int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double lot    = CalculateLotSize(slDistance);
-   if(lot <= 0)
+
+   // Check Martingale grid entry conditions first
+   bool martingaleBuyTriggered = false;
+   bool martingaleSellTriggered = false;
+   bool useMartingaleLot = false;
+
+   if(EnableMartingale)
    {
-      tradingStatus = "RISK_BELOW_MIN_LOT";
-      Print("No entry: risk budget is below broker minimum lot; reduce risk or increase balance.");
-      return;
+      martingaleBuyTriggered = ShouldOpenBuyGrid(Ask());
+      martingaleSellTriggered = ShouldOpenSellGrid(Bid());
    }
 
-   double open1 = iOpen(_Symbol, EntryTimeframe, 1);
-   bool bullishCandle = (close1 > open1);
-   bool bearishCandle = (close1 < open1);
-   bool rangeSignalBuy = low1 <= bbLower && rsi <= MinRSIBuy && bullishCandle;
-   bool rangeSignalSell = high1 >= bbUpper && rsi >= MaxRSISell && bearishCandle;
-   bool buySignal = rangeSignalBuy;
-   bool sellSignal = rangeSignalSell;
+   ENUM_ORDER_TYPE orderType = ORDER_TYPE_BUY;
+   bool buySignal = false;
+   bool sellSignal = false;
 
-   double gridDistance = MathMax(GridMinPoints * _Point,
-                           MathMin(GridMaxPoints * _Point, atr * GridATRMultiplier));
-   double avgEntry = 0;
-   double basketVolume = 0;
-   int basketSide = GetBasketSide(avgEntry, basketVolume);
-   if(botPositionsCount > 0)
+   if(EnableMartingale && martingaleBuyTriggered)
    {
-      // Add to a recovery basket only at an ATR-spaced adverse level AND on
-      // a fresh range reversal signal in the original basket's direction.
-      buySignal = (basketSide == POSITION_TYPE_BUY && Ask() <= avgEntry - gridDistance && rangeSignalBuy);
-      sellSignal = (basketSide == POSITION_TYPE_SELL && Bid() >= avgEntry + gridDistance && rangeSignalSell);
+      orderType = ORDER_TYPE_BUY;
+      useMartingaleLot = true;
+      buySignal = true;
+      tradingStatus = "MARTINGALE_BUY_GRID";
    }
-   else if(basketSide == -2)
+   else if(EnableMartingale && martingaleSellTriggered)
    {
-      tradingStatus = "RECOVERY_PAUSED";
-      riskBlockReason = "Mixed basket sides detected; no new orders";
-      return;
+      orderType = ORDER_TYPE_SELL;
+      useMartingaleLot = true;
+      sellSignal = true;
+      tradingStatus = "MARTINGALE_SELL_GRID";
+   }
+   else
+   {
+      double open1 = iOpen(_Symbol, EntryTimeframe, 1);
+      bool bullishCandle = (close1 > open1);
+      bool bearishCandle = (close1 < open1);
+      bool rangeSignalBuy = low1 <= bbLower && rsi <= MinRSIBuy && bullishCandle;
+      bool rangeSignalSell = high1 >= bbUpper && rsi >= MaxRSISell && bearishCandle;
+      buySignal = rangeSignalBuy;
+      sellSignal = rangeSignalSell;
+
+      double gridDistance = MathMax(GridMinPoints * _Point,
+                                MathMin(GridMaxPoints * _Point, atr * GridATRMultiplier));
+      double avgEntry = 0;
+      double basketVolume = 0;
+      int basketSide = GetBasketSide(avgEntry, basketVolume);
+      if(botPositionsCount > 0)
+      {
+         buySignal = (basketSide == POSITION_TYPE_BUY && Ask() <= avgEntry - gridDistance && rangeSignalBuy);
+         sellSignal = (basketSide == POSITION_TYPE_SELL && Bid() >= avgEntry + gridDistance && rangeSignalSell);
+      }
+      else if(basketSide == -2)
+      {
+         tradingStatus = "RECOVERY_PAUSED";
+         riskBlockReason = "Mixed basket sides detected; no new orders";
+         return;
+      }
+
+      if(!buySignal && !sellSignal)
+      {
+         tradingStatus = "WAITING_FOR_SIGNAL";
+         Print("No entry: reversal conditions not met on completed bar.");
+         return;
+      }
+      orderType = buySignal ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    }
 
-   Print("Signal check ", TimeToString(signalBarTime), ": strategy=", EnumToString(Strategy),
-         " mgStep=", martingaleStep, " riskLot=", lot, " close=", DoubleToString(close1, digits),
-         " BB[", DoubleToString(bbLower, digits), ",", DoubleToString(bbUpper, digits),
-         "] RSI=", DoubleToString(rsi, 1), " ATR=", DoubleToString(atr, digits),
-         " spread=", DoubleToString(currentSpreadPoints, 1),
-         " buy=", buySignal, " sell=", sellSignal);
-
-    if(buySignal || sellSignal)
-    {
-      ENUM_ORDER_TYPE orderType = buySignal ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(orderType == ORDER_TYPE_BUY || orderType == ORDER_TYPE_SELL)
+   {
       if(HasConflictingPosition(orderType))
       {
          tradingStatus = "RECOVERY_PAUSED";
          riskBlockReason = "Conflicting exposure exists";
          return;
       }
-      double orderPrice = (buySignal ? Ask() : Bid());
-      if(IsDuplicateGridLevel(orderType, orderPrice, gridDistance * 0.5))
+      double orderPrice = (orderType == ORDER_TYPE_BUY ? Ask() : Bid());
+      if(IsDuplicateGridLevel(orderType, orderPrice, MathMax(GridMinPoints * _Point, _Point * 2)))
       {
          tradingStatus = "DUPLICATE_GRID_LEVEL";
          return;
       }
-      lot = CalculateRecoveryLot(slDistance);
-      if(lot <= 0)
+      if(useMartingaleLot)
       {
-         tradingStatus = "RISK_BELOW_MIN_LOT";
-         return;
+         int currentBasketCount = (orderType == ORDER_TYPE_BUY) ? CountBuyBasketOrders() : CountSellBasketOrders();
+         lot = CalculateMartingaleLot(currentBasketCount);
+         if(lot <= 0)
+         {
+            tradingStatus = "RISK_BELOW_MIN_LOT";
+            return;
+         }
+      }
+      else if(lot <= 0)
+      {
+         lot = CalculateRecoveryLot(slDistance);
+         if(lot <= 0)
+         {
+            tradingStatus = "RISK_BELOW_MIN_LOT";
+            return;
+         }
       }
       if(!CheckMargin(orderType, lot, orderPrice)) return;
 
       bool basketPosition = botPositionsCount > 0 || !UsePerPositionStops;
-      double sl = basketPosition ? 0 : NormalizeDouble(buySignal ? orderPrice - slDistance : orderPrice + slDistance, digits);
-      double tp = basketPosition ? 0 : NormalizeDouble(buySignal ? orderPrice + tpDistance : orderPrice - tpDistance, digits);
+      double sl = basketPosition ? 0 : NormalizeDouble(orderType == ORDER_TYPE_BUY ? orderPrice - slDistance : orderPrice + slDistance, digits);
+      double tp = basketPosition ? 0 : NormalizeDouble(orderType == ORDER_TYPE_BUY ? orderPrice + tpDistance : orderPrice - tpDistance, digits);
       if(!ValidateStops(orderType, orderPrice, sl, tp))
       {
          tradingStatus = "INVALID_STOPS";
@@ -1478,29 +1514,29 @@ void ExecuteMeanReversion()
       if(!TradingAllowed()) return;
 
       bool sent = buySignal
-         ? trade.Buy(lot, _Symbol, 0, sl, tp, "Range martingale buy")
-         : trade.Sell(lot, _Symbol, 0, sl, tp, "Range martingale sell");
+         ? trade.Buy(lot, _Symbol, 0, sl, tp, "Martingale buy grid")
+         : trade.Sell(lot, _Symbol, 0, sl, tp, "Martingale sell grid");
       if(sent && IsTradeRetcodeSuccessful() && ConfirmPositionResult(orderType, lot))
-      {
+   {
    lastTradeTime = TimeCurrent();
-         tradesToday++;
-         tradingStatus = "TRADING";
-         Print(buySignal ? "BUY" : "SELL", " confirmed deal=", trade.ResultDeal(),
-               " lot=", lot, " step=", martingaleStep, " sl=", sl, " tp=", tp,
-               " retcode=", trade.ResultRetcodeDescription());
-         SavePersistentState();
-      }
-      else
-      {
-         tradingStatus = "ORDER_REJECTED";
-         Print("Order rejected/uncertain. sent=",sent," retcode=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription(),
-               " volume=", lot, " price=", orderPrice, " sl=", sl, " tp=", tp);
-      }
+   tradesToday++;
+   tradingStatus = "TRADING";
+   Print(buySignal ? "BUY" : "SELL", " confirmed deal=", trade.ResultDeal(),
+         " lot=", lot, " step=", martingaleStep, " sl=", sl, " tp=", tp,
+         " retcode=", trade.ResultRetcodeDescription());
+   SavePersistentState();
    }
    else
    {
-       tradingStatus = "WAITING_FOR_SIGNAL";
-       Print("No entry: reversal conditions not met on completed bar.");
+      tradingStatus = "ORDER_REJECTED";
+      Print("Order rejected/uncertain. sent=",sent," retcode=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription(),
+            " volume=", lot, " price=", orderPrice, " sl=", sl, " tp=", tp);
+   }
+   }
+   else
+   {
+      tradingStatus = "WAITING_FOR_SIGNAL";
+      Print("No entry: reversal conditions not met on completed bar.");
    }
 }
 
