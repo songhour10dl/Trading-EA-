@@ -153,6 +153,14 @@ double   currentADX = 0;
 double   currentATR = 0;
 bool     tradingEnabled   = false;
 
+//--- Martingale Grid State ------------------------------------------
+double   buyBasketReferencePrice = 0;
+double   sellBasketReferencePrice = 0;
+double   lastBuyGridPrice = 0;
+double   lastSellGridPrice = 0;
+datetime lastBasketCloseTime = 0;
+bool     basketCooldownActive = false;
+
 datetime lastHeartbeat    = 0;
 datetime lastCommandCheck = 0;
 datetime lastTradeTime    = 0;
