@@ -2129,4 +2129,248 @@ void EmergencyStop()
    Print("EMERGENCY STOP");
    OnHeartbeat();
 }
+
+//+------------------------------------------------------------------+
+//| Martingale Grid Calculation Functions                             |
+//+------------------------------------------------------------------+
+
+int CountBuyBasketOrders()
+{
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!positionInfo.SelectByIndex(i) || positionInfo.Symbol() != _Symbol || positionInfo.Magic() != MagicNumber) continue;
+      if(positionInfo.PositionType() == POSITION_TYPE_BUY) count++;
+   }
+   return count;
+}
+
+int CountSellBasketOrders()
+{
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!positionInfo.SelectByIndex(i) || positionInfo.Symbol() != _Symbol || positionInfo.Magic() != MagicNumber) continue;
+      if(positionInfo.PositionType() == POSITION_TYPE_SELL) count++;
+   }
+   return count;
+}
+
+double GetBuyBasketProfit()
+{
+   double profit = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!positionInfo.SelectByIndex(i) || positionInfo.Symbol() != _Symbol || positionInfo.Magic() != MagicNumber) continue;
+      if(positionInfo.PositionType() == POSITION_TYPE_BUY)
+         profit += positionInfo.Profit() + positionInfo.Swap() + positionInfo.Commission();
+   }
+   return profit;
+}
+
+double GetSellBasketProfit()
+{
+   double profit = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!positionInfo.SelectByIndex(i) || positionInfo.Symbol() != _Symbol || positionInfo.Magic() != MagicNumber) continue;
+      if(positionInfo.PositionType() == POSITION_TYPE_SELL)
+         profit += positionInfo.Profit() + positionInfo.Swap() + positionInfo.Commission();
+   }
+   return profit;
+}
+
+double CalculateMartingaleLot(int currentBasketCount)
+{
+   double rawLot = InitialLot * MathPow(LotMultiplier, currentBasketCount);
+   rawLot = MathMin(rawLot, MaxLotPerOrder);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(step <= 0 || minLot <= 0) return 0;
+   rawLot = MathFloor((rawLot + 1e-10) / step) * step;
+   rawLot = MathMax(rawLot, minLot);
+   return NormalizeDouble(rawLot, 2);
+}
+
+bool CheckBasketVolumeLimit(double newLotSize, bool isBuy)
+{
+   double currentVolume = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!positionInfo.SelectByIndex(i) || positionInfo.Symbol() != _Symbol || positionInfo.Magic() != MagicNumber) continue;
+      if((isBuy && positionInfo.PositionType() == POSITION_TYPE_BUY) || (!isBuy && positionInfo.PositionType() == POSITION_TYPE_SELL))
+         currentVolume += positionInfo.Volume();
+   }
+   if(currentVolume + newLotSize > MaxBasketLots)
+   {
+      Print("MARTINGALE: Basket volume limit reached.");
+      return false;
+   }
+   return true;
+}
+
+double GetGridStepDistance()
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0) return 0;
+   return GridStepPoints * point;
+}
+
+bool IsCooldownActive()
+{
+   if(CooldownAfterBasketCloseMinutes <= 0) return false;
+   if(lastBasketCloseTime == 0) return false;
+   datetime currentTime = TimeTradeServer();
+   int minutesSinceClose = (int)((currentTime - lastBasketCloseTime) / 60);
+   if(minutesSinceClose < CooldownAfterBasketCloseMinutes)
+   {
+      riskBlockReason = "COOLDOWN: " + IntegerToString(CooldownAfterBasketCloseMinutes - minutesSinceClose) + " min remaining";
+      return true;
+   }
+   return false;
+}
+
+bool ShouldOpenBuyGrid(double currentPrice)
+{
+   if(!EnableMartingale || !EnableBuy) return false;
+   if(IsCooldownActive()) return false;
+   int maxOrders = (MaxOrders > 0) ? MaxOrders : MaxMartingaleSteps;
+   int buyCount = CountBuyBasketOrders();
+   if(buyCount == 0)
+   {
+      buyBasketReferencePrice = currentPrice;
+      lastBuyGridPrice = currentPrice;
+      return true;
+   }
+   if(buyCount >= maxOrders)
+   {
+      riskBlockReason = "MARTINGALE: Max BUY orders reached";
+      return false;
+   }
+   double gridDistance = GetGridStepDistance();
+   if(gridDistance <= 0) return false;
+   double priceDropped = lastBuyGridPrice - currentPrice;
+   if(priceDropped >= gridDistance) return true;
+   return false;
+}
+
+bool ShouldOpenSellGrid(double currentPrice)
+{
+   if(!EnableMartingale || !EnableSell) return false;
+   if(IsCooldownActive()) return false;
+   int maxOrders = (MaxOrders > 0) ? MaxOrders : MaxMartingaleSteps;
+   int sellCount = CountSellBasketOrders();
+   if(sellCount == 0)
+   {
+      sellBasketReferencePrice = currentPrice;
+      lastSellGridPrice = currentPrice;
+      return true;
+   }
+   if(sellCount >= maxOrders)
+   {
+      riskBlockReason = "MARTINGALE: Max SELL orders reached";
+      return false;
+   }
+   double gridDistance = GetGridStepDistance();
+   if(gridDistance <= 0) return false;
+   double priceRose = currentPrice - lastSellGridPrice;
+   if(priceRose >= gridDistance) return true;
+   return false;
+}
+
+void CloseAllBuyPositions()
+{
+   int closed = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!positionInfo.SelectByIndex(i) || positionInfo.Symbol() != _Symbol || positionInfo.Magic() != MagicNumber) continue;
+      if(positionInfo.PositionType() == POSITION_TYPE_BUY)
+      {
+         ulong ticket = positionInfo.Ticket();
+         if(trade.PositionClose(ticket)) closed++;
+      }
+   }
+   if(closed > 0)
+   {
+      buyBasketReferencePrice = 0;
+      lastBuyGridPrice = 0;
+      lastBasketCloseTime = TimeTradeServer();
+   }
+}
+
+void CloseAllSellPositions()
+{
+   int closed = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!positionInfo.SelectByIndex(i) || positionInfo.Symbol() != _Symbol || positionInfo.Magic() != MagicNumber) continue;
+      if(positionInfo.PositionType() == POSITION_TYPE_SELL)
+      {
+         ulong ticket = positionInfo.Ticket();
+         if(trade.PositionClose(ticket)) closed++;
+      }
+   }
+   if(closed > 0)
+   {
+      sellBasketReferencePrice = 0;
+      lastSellGridPrice = 0;
+      lastBasketCloseTime = TimeTradeServer();
+   }
+}
+
+void CheckMartingaleBasketTakeProfit()
+{
+   if(!EnableMartingale || BasketTakeProfitMoney <= 0) return;
+   if(EnableBuy && CountBuyBasketOrders() > 0)
+   {
+      double buyProfit = GetBuyBasketProfit();
+      if(buyProfit >= BasketTakeProfitMoney) CloseAllBuyPositions();
+   }
+   if(EnableSell && CountSellBasketOrders() > 0)
+   {
+      double sellProfit = GetSellBasketProfit();
+      if(sellProfit >= BasketTakeProfitMoney) CloseAllSellPositions();
+   }
+}
+
+void CheckMartingaleBasketStopLoss()
+{
+   if(!EnableMartingale || BasketStopLossMoney <= 0) return;
+   if(EnableBuy && CountBuyBasketOrders() > 0)
+   {
+      double buyProfit = GetBuyBasketProfit();
+      if(buyProfit <= -BasketStopLossMoney) CloseAllBuyPositions();
+   }
+   if(EnableSell && CountSellBasketOrders() > 0)
+   {
+      double sellProfit = GetSellBasketProfit();
+      if(sellProfit <= -BasketStopLossMoney) CloseAllSellPositions();
+   }
+}
+
+void CheckMartingaleBasketDrawdown()
+{
+   if(!EnableMartingale || MaxDrawdownPercent <= 0) return;
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   static double buyPeak = 0;
+   static double sellPeak = 0;
+   if(EnableBuy && CountBuyBasketOrders() > 0)
+   {
+      if(currentEquity > buyPeak) buyPeak = currentEquity;
+      if(buyPeak > 0)
+      {
+         double drawdownPct = ((buyPeak - currentEquity) / buyPeak) * 100.0;
+         if(drawdownPct >= MaxDrawdownPercent) CloseAllBuyPositions();
+      }
+   }
+   if(EnableSell && CountSellBasketOrders() > 0)
+   {
+      if(currentEquity > sellPeak) sellPeak = currentEquity;
+      if(sellPeak > 0)
+      {
+         double drawdownPct = ((sellPeak - currentEquity) / sellPeak) * 100.0;
+         if(drawdownPct >= MaxDrawdownPercent) CloseAllSellPositions();
+      }
+   }
+}
 //+------------------------------------------------------------------+
