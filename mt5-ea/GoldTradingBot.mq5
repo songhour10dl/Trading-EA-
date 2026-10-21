@@ -89,6 +89,30 @@ input bool               UseBreakEven         = false;
 input double             BreakEvenAtR         = 1.0;
 input bool               UsePerPositionStops  = true;
 
+//--- Forward Declarations --------------------------------------------
+void OnHeartbeat();
+void ProcessCommands();
+void ManageTrailingStops();
+void CheckMartingaleBasketTakeProfit();
+void CheckMartingaleBasketStopLoss();
+void CheckMartingaleBasketDrawdown();
+bool IsCooldownActive();
+string JsonEscape(string str);
+void SendJson(string method, string url, string payload, string tag);
+double GetBasketSide(double &averageEntry, double &volume);
+void ExecuteMeanReversion();
+int CountBuyBasketOrders();
+int CountSellBasketOrders();
+double GetBuyBasketProfit();
+double GetSellBasketProfit();
+double CalculateMartingaleLot(int currentBasketCount);
+bool CheckBasketVolumeLimit(double newLotSize, bool isBuy);
+double GetGridStepDistance();
+bool ShouldOpenBuyGrid(double currentPrice);
+bool ShouldOpenSellGrid(double currentPrice);
+void CloseAllBuyPositions();
+void CloseAllSellPositions();
+
 //--- Indicator handles ----------------------------------------------
 int hRSI = INVALID_HANDLE;
 int hBB  = INVALID_HANDLE;
