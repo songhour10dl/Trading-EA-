@@ -567,8 +567,14 @@ void OnTick()
    ManageTrailingStops();
    UpdateStatusPanel();
 
+   // Martingale basket monitoring
+   CheckMartingaleBasketTakeProfit();
+   CheckMartingaleBasketStopLoss();
+   CheckMartingaleBasketDrawdown();
+
    newEntriesAllowed = tradingEnabled && eaStatus == "RUNNING" && CheckRiskLimits() && !basketRiskLatched &&
-                       UpdateMarketRegime() && !riskLatched && NewsAllowsEntries();
+                        UpdateMarketRegime() && !riskLatched && NewsAllowsEntries() &&
+                        !IsCooldownActive();
    if(newEntriesAllowed)
       ExecuteStrategy();
 }
