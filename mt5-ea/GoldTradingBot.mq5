@@ -1516,27 +1516,21 @@ void ExecuteMeanReversion()
       bool sent = buySignal
          ? trade.Buy(lot, _Symbol, 0, sl, tp, "Martingale buy grid")
          : trade.Sell(lot, _Symbol, 0, sl, tp, "Martingale sell grid");
-      if(sent && IsTradeRetcodeSuccessful() && ConfirmPositionResult(orderType, lot))
+   if(sent && IsTradeRetcodeSuccessful() && ConfirmPositionResult(orderType, lot))
    {
-   lastTradeTime = TimeCurrent();
-   tradesToday++;
-   tradingStatus = "TRADING";
-   Print(buySignal ? "BUY" : "SELL", " confirmed deal=", trade.ResultDeal(),
-         " lot=", lot, " step=", martingaleStep, " sl=", sl, " tp=", tp,
-         " retcode=", trade.ResultRetcodeDescription());
-   SavePersistentState();
+      lastTradeTime = TimeCurrent();
+      tradesToday++;
+      tradingStatus = "TRADING";
+      Print(buySignal ? "BUY" : "SELL", " confirmed deal=", trade.ResultDeal(),
+            " lot=", lot, " step=", martingaleStep, " sl=", sl, " tp=", tp,
+            " retcode=", trade.ResultRetcodeDescription());
+      SavePersistentState();
    }
    else
    {
       tradingStatus = "ORDER_REJECTED";
       Print("Order rejected/uncertain. sent=",sent," retcode=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription(),
             " volume=", lot, " price=", orderPrice, " sl=", sl, " tp=", tp);
-   }
-   }
-   else
-   {
-      tradingStatus = "WAITING_FOR_SIGNAL";
-      Print("No entry: reversal conditions not met on completed bar.");
    }
 }
 
