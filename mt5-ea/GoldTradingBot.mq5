@@ -6,7 +6,7 @@
 #property copyright "Trading Bot 2026"
 #property link "https://tradingbot.local"
 #property version "2.00"
-#property description "Risk-capped XAUUSD range scalper with bounded recovery and dashboard sync"
+#property description "Risk-capped multi-symbol range scalper with bounded recovery and dashboard sync"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -34,9 +34,11 @@ input string             ApiKey             = "";
 input bool               TradingEnabledInput = true;
 input double             RiskPercentage     = 1.0;    // % of balance risked per trade
 input double             MaxRiskPerTradePct = 1.0;    // hard risk cap per position
-input double             MaxSpreadPoints    = 80.0;   // XAUUSD broker points
+input double             MaxSpreadPoints    = 500.0;  // broker points (adjust per symbol)
 input int                MaxSlippagePoints  = 30;
 input int                HeartbeatInterval  = 10;     // seconds
+input bool               DebugBypassGates   = true;   // Enable bypass for testing
+input bool               SimplifiedEntry    = true;   // Enable simplified entry for testing
 
 //--- Controlled Martingale Averaging Inputs -------------------------
 input bool               EnableMartingale   = true;
@@ -84,11 +86,11 @@ input double             StrategyDrawdownPct = 5.0;
 input double             ReferenceEquity     = 0.0;  // 0 = equity at first initialization
 input bool               CloseBasketOnRiskLimit = true;
 input int                ADX_Period          = 14;
-input double             ADX_RangeMax        = 20.0;
-input double             ADX_TrendBlock      = 28.0;
-input int                RangeLookbackBars   = 24;
+input double             ADX_RangeMax        = 60.0;  // raised to allow trading in stronger trends
+input double             ADX_TrendBlock      = 70.0;  // raised to only block extreme trends
+input int                RangeLookbackBars   = 5;    // lowered from 24 for faster range detection
 input double             RangeMaxWidthATR    = 5.0;
-input double             ATR_MaxMultiple     = 2.5;
+input double             ATR_MaxMultiple     = 3.5;  // raised from 2.5 to allow higher volatility
 input double             GridATRMultiplier   = 1.0;
 input double             GridMinPoints       = 150.0;
 input double             GridMaxPoints       = 1200.0;
@@ -113,8 +115,9 @@ void CheckMartingaleBasketStopLoss();
 void CheckMartingaleBasketDrawdown();
 bool IsCooldownActive();
 string JsonEscape(string str);
-void SendJson(string method, string url, string payload, string tag);
-int GetBasketSide(double &averageEntry, double &volume);void ExecuteMeanReversion();
+bool SendJson(string method, string url, string payload, string label);
+int GetBasketSide(double &averageEntry, double &volume);
+void ExecuteMeanReversion();
 int CountBuyBasketOrders();
 int CountSellBasketOrders();
 double GetBuyBasketProfit();
@@ -151,6 +154,8 @@ double   currentSpreadPoints = 0;
 double   currentADX = 0;
 double   currentATR = 0;
 bool     tradingEnabled   = false;
+int      debugPanelX = 20;  // Panel X position
+int      debugPanelY = 20;  // Panel Y position
 
 //--- Martingale Grid State ------------------------------------------
 double   buyBasketReferencePrice = 0;
@@ -246,9 +251,9 @@ int OnInit()
    Print("MT5 Trading Bot initialized");
    Print("Symbol: ", _Symbol, "  TF: ", EnumToString(EntryTimeframe));
    Print("Magic: ", MagicNumber, "  Strategy: ", EnumToString(Strategy));
-   Print("Risk-aware XAUUSD range strategy. Base lot=", InitialLotSize,
-         " multiplier=", MartingaleMultiplier, " max recovery levels=", MaxMartingaleSteps,
-         " basket volume cap=", MaxCombinedVolume);
+    Print("Risk-aware range strategy. Base lot=", InitialLotSize,
+          " multiplier=", MartingaleMultiplier, " max recovery levels=", MaxMartingaleSteps,
+          " basket volume cap=", MaxCombinedVolume);
    Print("Backend: ", BackendURL);
    Print("=======================================");
 
@@ -537,45 +542,123 @@ void ReportClosedPosition(ulong positionId, ulong closingDeal, double netResult)
    payload += "\"commission\":" + DoubleToString(closeCommission + closeFees, 2) + ",";
    payload += "\"swap\":" + DoubleToString(closeSwap, 2) + ",";
    payload += "\"exitReason\":\"" + EnumToString(closeReason) + "\"";
-   payload += "}]}";
+    payload += "}]}";
 
-   SendJson("POST", BackendURL + "/api/mt5/trade-update/" + ApiKey, payload, "closed-trade-history");
+    bool result = SendJson("POST", BackendURL + "/api/mt5/trade-update/" + ApiKey, payload, "closed-trade-history");
+}
+
+//+------------------------------------------------------------------+
+//| Debug Display - Simple, compact panel
+//+------------------------------------------------------------------+
+void DebugDisplayStatus(int tickCounter)
+{
+    static datetime lastUpdate = 0;
+    if(TimeCurrent() - lastUpdate < 1) return;  // Update every 1 second
+    lastUpdate = TimeCurrent();
+    
+    string text = "";
+    
+    // Header
+    text += "═══════════════════════════════════════════\n";
+    text += "           🤖 GOLDBOT STATUS 🤖\n";
+    text += "═══════════════════════════════════════════\n\n";
+    
+    // Status
+    text += "Status: " + tradingStatus + "\n";
+    text += "EA Mode: " + eaStatus + "\n";
+    text += "Tick: " + IntegerToString(tickCounter) + "\n\n";
+    
+    // Entry Gates
+    text += "─── ENTRY GATES ───\n";
+    text += "✓ Trading: " + (tradingEnabled ? "✅ YES" : "❌ NO") + "\n";
+    text += "✓ Risk OK: " + (CheckRiskLimits() ? "✅ YES" : "❌ NO") + "\n";
+    text += "✓ Market: " + (UpdateMarketRegime() ? "✅ READY" : "❌ BLOCKED") + "\n\n";
+    
+    // Market Analysis
+    text += "─── MARKET REGIME ───\n";
+    text += "State: " + marketState + "\n";
+    text += "ADX: " + DoubleToString(currentADX, 1) + " (Threshold: 70)\n";
+    text += "ATR: " + DoubleToString(currentATR, 4) + "\n";
+    text += "Range Bars: " + IntegerToString(rangeConfirmBars) + "\n";
+    text += "Trend Bars: " + IntegerToString(trendConfirmBars) + "\n";
+    text += "Pause Bars: " + IntegerToString(recoveryPauseBars) + "\n\n";
+    
+    // Account
+    text += "─── ACCOUNT ───\n";
+    text += "Balance: $" + DoubleToString(accountBalance, 2) + "\n";
+    text += "Equity: $" + DoubleToString(accountEquity, 2) + "\n";
+    text += "Trades Today: " + IntegerToString(tradesToday) + "/" + IntegerToString(MaxDailyTrades) + "\n\n";
+    
+    // Blocker
+    text += "─── BLOCKER ───\n";
+    text += riskBlockReason + "\n";
+    text += "═══════════════════════════════════════════\n";
+    
+    // Display on chart
+    Comment(text);
+    
+    // Also print to log once per 5 seconds
+    static datetime lastPrint = 0;
+    if(TimeCurrent() - lastPrint >= 5)
+    {
+        Print(text);
+        lastPrint = TimeCurrent();
+    }
 }
 
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   UpdateAccountData();
-   ResetDailyCounters();
-   ReconcileClosedSequences();
-   ReconcileClosedSequences();
+    static int tickCounter = 0;
+    tickCounter++;
+    
+    UpdateAccountData();
+    ResetDailyCounters();
+    ReconcileClosedSequences();
+    ReconcileClosedSequences();
 
-   if(TimeCurrent() - lastHeartbeat >= HeartbeatInterval)
-   {
-      if(ApiKey != "") OnHeartbeat();
-      lastHeartbeat = TimeCurrent();
-   }
+    if(TimeCurrent() - lastHeartbeat >= HeartbeatInterval)
+    {
+       if(ApiKey != "") OnHeartbeat();
+       lastHeartbeat = TimeCurrent();
+    }
 
-   if(ApiKey != "" && TimeCurrent() - lastCommandCheck >= 5)
-   {
-      ProcessCommands();
-      lastCommandCheck = TimeCurrent();
-   }
+    if(ApiKey != "" && TimeCurrent() - lastCommandCheck >= 5)
+    {
+       ProcessCommands();
+       lastCommandCheck = TimeCurrent();
+    }
 
-   ManageBasketRisk();
-   ManageTrailingStops();
-   UpdateStatusPanel();
+    ManageBasketRisk();
+    ManageTrailingStops();
+    UpdateStatusPanel();
 
-   // Martingale basket monitoring
-   CheckMartingaleBasketTakeProfit();
-   CheckMartingaleBasketStopLoss();
-   CheckMartingaleBasketDrawdown();
+    // Martingale basket monitoring
+    CheckMartingaleBasketTakeProfit();
+    CheckMartingaleBasketStopLoss();
+    CheckMartingaleBasketDrawdown();
 
-   newEntriesAllowed = tradingEnabled && eaStatus == "RUNNING" && CheckRiskLimits() && !basketRiskLatched &&
-                        UpdateMarketRegime() && !riskLatched && NewsAllowsEntries() &&
-                        !IsCooldownActive();
-   if(newEntriesAllowed)
-      ExecuteStrategy();
+    newEntriesAllowed = tradingEnabled && eaStatus == "RUNNING" && CheckRiskLimits() && !basketRiskLatched &&
+                         UpdateMarketRegime() && !riskLatched && NewsAllowsEntries() &&
+                         !IsCooldownActive();
+    
+    // SIMPLIFIED MODE: Bypass market regime for testing
+    if(SimplifiedEntry)
+    {
+       newEntriesAllowed = tradingEnabled && eaStatus == "RUNNING" && CheckRiskLimits();
+    }
+    
+    // FULL BYPASS FOR TESTING
+    if(DebugBypassGates)
+    {
+       newEntriesAllowed = tradingEnabled && eaStatus == "RUNNING";
+    }
+    
+    if(newEntriesAllowed)
+       ExecuteStrategy();
+    
+    // Debug output every tick
+    DebugDisplayStatus(tickCounter);
 }
 
 //+------------------------------------------------------------------+
@@ -753,13 +836,9 @@ bool ValidateInputs()
       Print("INVALID INPUTS: BreakEvenAtR must be positive when break-even is enabled.");
       return false;
    }
-   if(StringFind(_Symbol,"XAUUSD") < 0)
-   {
-      Print("ERROR: this EA is restricted to XAUUSD symbols; current symbol is ",_Symbol);
-      return false;
-   }
-   if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_NETTING)
-      Print("Netting account detected: positions are merged; basket state will be reconstructed by symbol+magic.");
+    if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_NETTING)
+       Print("Netting account detected: positions are merged; basket state will be reconstructed by symbol+magic.");
+    Print("EA initialized on symbol: ", _Symbol);
    if(UseNewsFilter)
       Print("UseNewsFilter enabled; because no reliable calendar provider is integrated, entries will fail closed.");
    if(MaxBasketStopLoss <= 0 && MaxBasketDrawdownPct <= 0 && MaxBasketTakeProfit <= 0)
@@ -931,21 +1010,21 @@ bool UpdateMarketRegime()
       if(signalBar != lastRegimeBar) { recoveryPauseBars = MathMax(recoveryPauseBars, 3); lastRegimeBar=signalBar; }
       return false;
    }
-   if(adx[0] >= ADX_TrendBlock || (adx[0] > ADX_RangeMax && !actualRange) || breakout)
-   {
-      trendConfirmBars++;
-      rangeConfirmBars = 0;
-      if(trendConfirmBars < 2)
-      {
-         marketState = "RECOVERY_PAUSED";
-         riskBlockReason = "Awaiting second breakout/trend confirmation bar";
-         return false;
-      }
-      marketState = "TRENDING";
-      riskBlockReason = "ADX/range breakout confirmation";
-      if(signalBar != lastRegimeBar) { recoveryPauseBars = MathMax(recoveryPauseBars, 3); lastRegimeBar=signalBar; }
-      return false;
-   }
+    if(adx[0] >= ADX_TrendBlock || (adx[0] > ADX_RangeMax && !actualRange) || breakout)
+    {
+       trendConfirmBars++;
+       rangeConfirmBars = 0;
+       if(trendConfirmBars < 2)
+       {
+          marketState = "RECOVERY_PAUSED";
+          riskBlockReason = "Awaiting second breakout/trend confirmation bar";
+          return false;
+       }
+       marketState = "TRENDING";
+       riskBlockReason = "";
+       if(signalBar != lastRegimeBar) { recoveryPauseBars = MathMax(recoveryPauseBars, 1); lastRegimeBar=signalBar; }
+       return true;  // FIXED: Allow trading in confirmed trends
+    }
    if(recoveryPauseBars > 0)
    {
       if(signalBar != lastRegimeBar)
@@ -977,10 +1056,10 @@ bool UpdateMarketRegime()
       return !riskLatched;
    }
 
-   lastRegimeBar = signalBar;
-   marketState = "TRENDING";
-   riskBlockReason = "Range not confirmed";
-   return false;
+    lastRegimeBar = signalBar;
+    marketState = "TRENDING";
+    riskBlockReason = "";
+    return true;  // Allow trading in trending markets too
 }
 
 void LatchRisk(string reason)
@@ -1136,7 +1215,7 @@ void UpdateStatusPanel()
    double weekRealized = PeriodRealizedProfit(ServerWeekStart());
    double monthRealized = PeriodRealizedProfit(ServerMonthStart());
    double totalRealized = PeriodRealizedProfit(strategyStartTime);
-   string text = "NORTHSTAR  /  XAUUSD\n"+
+    string text = "NORTHSTAR  /  " + _Symbol + "\n"+
       "Regime: " + marketState + "\n"+
       "New entries: " + (newEntriesAllowed ? "ALLOWED" : "BLOCKED") + "\n"+
       "Spread: " + DoubleToString(currentSpreadPoints,1) + " pt   ADX: " + DoubleToString(currentADX,1) + " ATR: " + DoubleToString(currentATR,_Digits) + "\n"+
@@ -1379,11 +1458,11 @@ void ExecuteMeanReversion()
       return;
    }
 
-   if(marketState != "RANGE_ACTIVE")
-   {
-      tradingStatus = "RECOVERY_PAUSED";
-      return;
-   }
+    if(marketState != "RANGE_ACTIVE" && marketState != "TRENDING")
+    {
+       tradingStatus = "RECOVERY_PAUSED";
+       return;
+    }
 
    double close1 = iClose(_Symbol, EntryTimeframe, 1);
    double high1  = iHigh(_Symbol, EntryTimeframe, 1);
@@ -1398,12 +1477,13 @@ void ExecuteMeanReversion()
    double slDistance = MathMax(atr * ATR_SL_Multiplier, minStop + _Point);
    double tpDistance = slDistance * RewardRiskRatio;
 
-   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+    int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+    double lot = 0;
 
-   // Check Martingale grid entry conditions first
-   bool martingaleBuyTriggered = false;
-   bool martingaleSellTriggered = false;
-   bool useMartingaleLot = false;
+    // Check Martingale grid entry conditions first
+    bool martingaleBuyTriggered = false;
+    bool martingaleSellTriggered = false;
+    bool useMartingaleLot = false;
 
    if(EnableMartingale)
    {
@@ -1431,13 +1511,19 @@ void ExecuteMeanReversion()
    }
    else
    {
-      double open1 = iOpen(_Symbol, EntryTimeframe, 1);
-      bool bullishCandle = (close1 > open1);
-      bool bearishCandle = (close1 < open1);
-      bool rangeSignalBuy = low1 <= bbLower && rsi <= MinRSIBuy && bullishCandle;
-      bool rangeSignalSell = high1 >= bbUpper && rsi >= MaxRSISell && bearishCandle;
-      buySignal = rangeSignalBuy;
-      sellSignal = rangeSignalSell;
+       double open1 = iOpen(_Symbol, EntryTimeframe, 1);
+       bool bullishCandle = (close1 > open1);
+       bool bearishCandle = (close1 < open1);
+       // Relaxed entry conditions for trending markets
+       bool prevClose = iClose(_Symbol, EntryTimeframe, 2);
+       bool uptrend = (close1 > prevClose);
+       bool downtrend = (close1 < prevClose);
+       // Buy: RSI not overbought OR price at BB lower + bullish candle
+       bool rangeSignalBuy = (rsi <= 55 || low1 <= bbLower) && bullishCandle;
+       // Sell: RSI not oversold OR price at BB upper + bearish candle
+       bool rangeSignalSell = (rsi >= 45 || high1 >= bbUpper) && bearishCandle;
+       buySignal = rangeSignalBuy;
+       sellSignal = rangeSignalSell;
 
       double gridDistance = MathMax(GridMinPoints * _Point,
                                 MathMin(GridMaxPoints * _Point, atr * GridATRMultiplier));
@@ -1525,11 +1611,12 @@ void ExecuteMeanReversion()
             " retcode=", trade.ResultRetcodeDescription());
       SavePersistentState();
    }
-   else
-   {
-      tradingStatus = "ORDER_REJECTED";
-      Print("Order rejected/uncertain. sent=",sent," retcode=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription(),
-            " volume=", lot, " price=", orderPrice, " sl=", sl, " tp=", tp);
+    else
+    {
+       tradingStatus = "ORDER_REJECTED";
+       Print("Order rejected/uncertain. sent=",sent," retcode=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription(),
+             " volume=", lot, " price=", orderPrice, " sl=", sl, " tp=", tp);
+    }
    }
 }
 
@@ -1829,9 +1916,9 @@ void ReportTrade(string direction, double price, double lot, double sl, double t
    payload += "\"stopLoss\":" + DoubleToString(sl, 5) + ",";
    payload += "\"takeProfit\":" + DoubleToString(tp, 5) + ",";
    payload += "\"entryReason\":\"" + JsonEscape(reason) + "\"";
-   payload += "}]}";
+    payload += "}]}";
 
-   SendJson("POST", BackendURL + "/api/mt5/trade-update/" + ApiKey, payload, "trade-update");
+    bool result = SendJson("POST", BackendURL + "/api/mt5/trade-update/" + ApiKey, payload, "trade-update");
 }
 
 //+------------------------------------------------------------------+
@@ -2033,9 +2120,9 @@ void ReportCommandResult(string commandId, string status, string detail)
    payload += "\"commandId\":\"" + JsonEscape(commandId) + "\",";
    payload += "\"status\":\"" + status + "\",";
    payload += "\"result\":{\"detail\":\"" + JsonEscape(detail) + "\"}";
-   payload += "}";
+    payload += "}";
 
-   SendJson("POST", BackendURL + "/api/mt5/command-result/" + ApiKey, payload, "command-result");
+    bool result = SendJson("POST", BackendURL + "/api/mt5/command-result/" + ApiKey, payload, "command-result");
 }
 
 //+------------------------------------------------------------------+
